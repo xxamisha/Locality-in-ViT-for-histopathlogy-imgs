@@ -1,4 +1,4 @@
-```python
+
 """
 Swaps GPSA in for standard attention in a pretrained phikon backbone.
 
@@ -156,4 +156,3 @@ if __name__ == "__main__":
     print("layer 0 gate (per head):", gates[0])
     print("layer 0 gate grad is not None:",
           model.layers[0].attention.gpsa.gating_param.grad is not None)
-```

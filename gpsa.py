@@ -1,4 +1,4 @@
-```python
+
 
 """
 GPSA (Gated Positional Self-Attention) layer, based on ConViT.

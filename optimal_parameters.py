@@ -4,7 +4,7 @@ THIS IS AFTER RUNNING HPARAM.PY THAT I FOUND THIS NEW OPTIMAL RATES. mentioned i
 
 compares against the existing vanilla baseline.
 
-Run: python run_combined_config.py
+Run: python optimal_parameters.py
 """
 
 import torch

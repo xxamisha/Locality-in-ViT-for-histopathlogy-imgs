@@ -6,7 +6,7 @@ does training longer actually help, or was initialization/LR the real fix?
 supplementary check, not the main statistical claim but enough points
 to plot an accuracy-vs-epochs curve.
 
-Run: python ablation_epochs.py
+Run: python ablation_epoch.py
 """
 
 import torch

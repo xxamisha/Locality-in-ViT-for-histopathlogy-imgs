@@ -96,7 +96,7 @@ def plot_boxplot(model_dirs, metric="test_ood_acc", save_path="./boxplot_run_dis
         return
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.boxplot(data, labels=labels, showmeans=True)
+    ax.boxplot(data, tick_labels=labels, showmeans=True)
     ax.set_ylabel(metric)
     ax.set_title(f"Spread across seeds ({metric})")
     ax.grid(axis="y", alpha=0.3)

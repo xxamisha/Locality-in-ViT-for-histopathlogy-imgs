@@ -110,9 +110,8 @@ def plot_boxplot(model_dirs, metric="test_ood_acc", save_path="./boxplot_run_dis
 def plot_paired_slope(dir_a, dir_b, label_a, label_b, metric="test_ood_acc", save_path=None):
     """
     Draws a line for each seed from its dir_a result to its dir_b
-    result - makes it easy to see at a glance whether one model beats
-    the other pretty much every time, or if it's more mixed. Goes
-    nicely with the paired statistical test since it's the same idea
+    result - makes it easy to see whether one model beats
+    the other pretty much every time, or if it's more mixed. pairs with statistical test since it's the same idea
     just visualized.
     """
     a_results = load_seed_results(dir_a)
@@ -142,6 +141,150 @@ def plot_paired_slope(dir_a, dir_b, label_a, label_b, metric="test_ood_acc", sav
     plt.savefig(save_path, dpi=150)
     print(f"saved {save_path}")
     plt.close()
+#Ablation section:
+def plot_hparam_search(results_dir="./checkpoints/gpsa_search", metric="test_ood_acc"):
+    """Bar charts for the gating_init and new_lr sweeps."""
+    gating_values = [0.0, 0.5, 1.0]
+    lr_values = [1e-4, 5e-4, 1e-3]
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+
+    for ax, sweep_name, values in [(axes[0], "gating_init", gating_values),
+                                     (axes[1], "new_lr", lr_values)]:
+        means, stds, labels = [], [], []
+        for v in values:
+            path = f"{results_dir}/{sweep_name}_{v}/seed_results.csv"
+            if not os.path.exists(path):
+                continue
+            accs = []
+            with open(path, "r", newline="") as f:
+                for row in csv.DictReader(f):
+                    accs.append(float(row[metric]))
+            accs = np.array(accs)
+            means.append(accs.mean())
+            stds.append(accs.std())
+            labels.append(str(v))
+
+        ax.bar(labels, means, yerr=stds, capsize=5, color="tab:blue", alpha=0.7)
+        ax.set_xlabel(sweep_name)
+        ax.set_ylabel(metric)
+        ax.set_title(f"{sweep_name} sweep")
+        ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("./ablation_hparam_search.png", dpi=150)
+    print("saved ablation_hparam_search.png")
+    plt.close()
+
+    rows = []
+    for sweep_name, values in [("gating_init", gating_values), ("new_lr", lr_values)]:
+        for v in values:
+            path = f"{results_dir}/{sweep_name}_{v}/seed_results.csv"
+            if not os.path.exists(path):
+                continue
+            accs = []
+            with open(path, "r", newline="") as f:
+                for row in csv.DictReader(f):
+                    accs.append(float(row[metric]))
+            accs = np.array(accs)
+            rows.append({"sweep": sweep_name, "value": v, "n": len(accs),
+                         "mean": round(accs.mean(), 4), "std": round(accs.std(), 4)})
+    if rows:
+        with open("./results_table_hparam_search.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+        print("saved results_table_hparam_search.csv")
+
+
+def plot_local_layers_ablation(results_dir="./checkpoints/ablation_local_layers", metric="test_ood_acc"):
+    """Bar chart for the local_layers sweep."""
+    values = [4, 6, 8, 10, 12]
+    means, stds, labels, rows = [], [], [], []
+
+    for v in values:
+        path = f"{results_dir}/local_layers_{v}/seed_results.csv"
+        if not os.path.exists(path):
+            continue
+        accs = []
+        with open(path, "r", newline="") as f:
+            for row in csv.DictReader(f):
+                accs.append(float(row[metric]))
+        accs = np.array(accs)
+        means.append(accs.mean())
+        stds.append(accs.std())
+        labels.append(str(v))
+        rows.append({"local_layers": v, "n": len(accs),
+                     "mean": round(accs.mean(), 4), "std": round(accs.std(), 4)})
+
+    if not means:
+        print("no local_layers ablation results found")
+        return
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.bar(labels, means, yerr=stds, capsize=5, color="tab:green", alpha=0.7)
+    ax.set_xlabel("local_layers (number of GPSA layers)")
+    ax.set_ylabel(metric)
+    ax.set_title("local_layers ablation")
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("./ablation_local_layers.png", dpi=150)
+    print("saved ablation_local_layers.png")
+    plt.close()
+
+    with open("./results_table_local_layers.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    print("saved results_table_local_layers.csv")
+
+
+def plot_epoch_ablation(results_dir="./checkpoints/ablation_epochs", metric="test_ood_acc"):
+    """
+    Line chart of accuracy vs epoch count - the closest thing to a
+    convergence curve given what i actually logged (final accuracy at
+    each of 1/3/5 epochs, not per-step). evidence for
+    "performance over epochs".
+    """
+    values = [1, 3, 5]
+    means, stds, rows = [], [], []
+
+    for v in values:
+        path = f"{results_dir}/epochs_{v}/seed_results.csv"
+        if not os.path.exists(path):
+            continue
+        accs = []
+        with open(path, "r", newline="") as f:
+            for row in csv.DictReader(f):
+                accs.append(float(row[metric]))
+        accs = np.array(accs)
+        means.append(accs.mean())
+        stds.append(accs.std())
+        rows.append({"epochs": v, "n": len(accs),
+                     "mean": round(accs.mean(), 4), "std": round(accs.std(), 4)})
+
+    if not means:
+        print("no epoch ablation results found")
+        return
+
+    plotted_epochs = values[:len(means)]
+    fig, ax = plt.subplots(figsize=(6, 5))
+    ax.errorbar(plotted_epochs, means, yerr=stds, marker="o", capsize=5, color="tab:orange")
+    ax.set_xlabel("epochs")
+    ax.set_ylabel(metric)
+    ax.set_title("Accuracy vs training length (tuned config)")
+    ax.set_xticks(plotted_epochs)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("./ablation_epochs.png", dpi=150)
+    print("saved ablation_epochs.png")
+    plt.close()
+
+    with open("./results_table_epochs.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+    print("saved results_table_epochs.csv")
 
 
 def count_params(model):

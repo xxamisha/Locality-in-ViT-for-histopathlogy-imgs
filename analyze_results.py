@@ -141,6 +141,234 @@ def plot_paired_slope(dir_a, dir_b, label_a, label_b, metric="test_ood_acc", sav
     plt.savefig(save_path, dpi=150)
     print(f"saved {save_path}")
     plt.close()
+def plot_mean_accuracy_ci(model_dirs, metric="test_ood_acc",
+                          save_path="./mean_accuracy_confidence_intervals.png"):
+    """Plot mean accuracy with an approximate 95% confidence interval."""
+    labels, means, errors = [], [], []
+    for name, base_dir in model_dirs.items():
+        results = load_seed_results(base_dir)
+        if not results:
+            continue
+        values = np.array([float(row[metric]) for row in results.values()])
+        labels.append(name)
+        means.append(values.mean())
+        errors.append(1.96 * values.std(ddof=1) / np.sqrt(len(values)))
+
+    if not means:
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.bar(labels, means, yerr=errors, capsize=5, color=["#4c78a8", "#f58518", "#54a24b"])
+    ax.set_ylabel(metric)
+    ax.set_title(f"Mean {metric} with 95% confidence intervals")
+    ax.set_ylim(0, 1)
+    ax.grid(axis="y", alpha=0.3)
+    plt.xticks(rotation=15)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=180)
+    print(f"saved {save_path}")
+    plt.close()
+
+
+def plot_seed_heatmap(model_dirs, metric="test_ood_acc",
+                      save_path="./seed_accuracy_heatmap.png"):
+    """Plot one accuracy cell per model and seed."""
+    seed_values = {name: load_seed_results(path) for name, path in model_dirs.items()}
+    shared_seeds = sorted(set.intersection(*(set(values) for values in seed_values.values())))
+    if not shared_seeds:
+        print("no shared seeds available for heatmap")
+        return
+
+    matrix = np.array([
+        [float(seed_values[name][seed][metric]) for seed in shared_seeds]
+        for name in model_dirs
+    ])
+    fig, ax = plt.subplots(figsize=(10, 3.8))
+    image = ax.imshow(matrix, aspect="auto", cmap="YlGn", vmin=matrix.min(), vmax=matrix.max())
+    ax.set_yticks(range(len(model_dirs)), list(model_dirs))
+    ax.set_xticks(range(len(shared_seeds)), shared_seeds)
+    ax.set_xlabel("Seed")
+    ax.set_title(f"{metric} across shared seeds")
+    for row in range(matrix.shape[0]):
+        for col in range(matrix.shape[1]):
+            ax.text(col, row, f"{matrix[row, col]:.3f}", ha="center", va="center", fontsize=8)
+    fig.colorbar(image, ax=ax, label=metric)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=180)
+    print(f"saved {save_path}")
+    plt.close()
+
+
+class Camelyon17HFDataset(Dataset):
+    def __init__(self, hf_split, transform):
+        self.data = hf_split
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        example = self.data[index]
+        image = example["image"].convert("RGB")
+        return self.transform(image), example["label"]
+
+
+def build_ood_test_loader(batch_size=16, num_workers=0):
+    """Build the same center-2 OOD test loader used by training."""
+    dataset = load_dataset("wltjr1007/Camelyon17-WILDS")
+    all_data = concatenate_datasets([
+        dataset["train"], dataset["validation"], dataset["test"]
+    ])
+    test_hf = all_data.filter(lambda example: example["center"] == 2)
+    transform = T.Compose([
+        T.Resize((224, 224)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+    ])
+    return DataLoader(
+        Camelyon17HFDataset(test_hf, transform),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
+
+
+def collect_predictions(model_dirs, prediction_seeds, device, batch_size=16):
+    """Evaluate selected checkpoint seeds and average their probabilities."""
+    loader = build_ood_test_loader(batch_size=batch_size)
+    factories = {
+        "vanilla": lambda: PhikonClassifier(),
+        "GPSA (default)": lambda: PhikonGPSAClassifier(local_layers=10, locality_strength=1.0,
+                                                         gating_init=1.0),
+        "GPSA (tuned)": lambda: PhikonGPSAClassifier(local_layers=10, locality_strength=1.0,
+                                                       gating_init=0.0),
+    }
+    predictions = {}
+    labels = None
+
+    for name, base_dir in model_dirs.items():
+        probability_sum = None
+        used_seeds = []
+        for seed in prediction_seeds:
+            checkpoint_path = os.path.join(base_dir, f"seed_{seed}", "latest.pt")
+            if not os.path.exists(checkpoint_path):
+                print(f"warning: missing checkpoint {checkpoint_path}")
+                continue
+            model = factories[name]().to(device)
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint["model_state"])
+            model.eval()
+            batch_probabilities, batch_labels = [], []
+            with torch.no_grad():
+                for images, batch_y in loader:
+                    probabilities = torch.softmax(model(images.to(device)), dim=-1)[:, 1]
+                    batch_probabilities.append(probabilities.cpu().numpy())
+                    batch_labels.append(batch_y.numpy())
+            current_probabilities = np.concatenate(batch_probabilities)
+            current_labels = np.concatenate(batch_labels)
+            if labels is None:
+                labels = current_labels
+            if probability_sum is None:
+                probability_sum = np.zeros_like(current_probabilities)
+            probability_sum += current_probabilities
+            used_seeds.append(seed)
+            del model
+            if device == "cuda":
+                torch.cuda.empty_cache()
+
+        if used_seeds:
+            predictions[name] = probability_sum / len(used_seeds)
+            print(f"{name}: averaged checkpoint seeds {used_seeds}")
+
+    return labels, predictions
+
+
+def binary_curves(labels, probabilities):
+    """Return ROC and precision-recall points without requiring scikit-learn."""
+    thresholds = np.r_[np.inf, np.sort(np.unique(probabilities))[::-1]]
+    positives = max(1, np.sum(labels == 1))
+    negatives = max(1, np.sum(labels == 0))
+    fpr, tpr, precision, recall = [], [], [], []
+    for threshold in thresholds:
+        predicted = probabilities >= threshold
+        tp = np.sum(predicted & (labels == 1))
+        fp = np.sum(predicted & (labels == 0))
+        fn = np.sum(~predicted & (labels == 1))
+        fpr.append(fp / negatives)
+        tpr.append(tp / positives)
+        precision.append(tp / max(1, tp + fp))
+        recall.append(tp / max(1, tp + fn))
+    return np.array(fpr), np.array(tpr), np.array(precision), np.array(recall)
+
+
+def area_under_curve(x, y):
+    order = np.argsort(x)
+    return np.trapezoid(y[order], x[order]) if hasattr(np, "trapezoid") else np.trapz(y[order], x[order])
+
+
+def plot_prediction_diagnostics(model_dirs, device, prediction_seeds=(0,), batch_size=16):
+    """Create normalized confusion matrices, ROC, and precision-recall plots."""
+    labels, predictions = collect_predictions(model_dirs, prediction_seeds, device, batch_size)
+    if not predictions:
+        print("no checkpoint predictions available")
+        return
+
+    names = list(predictions)
+    fig, axes = plt.subplots(1, len(names), figsize=(4 * len(names), 3.8), squeeze=False)
+    for axis, name in zip(axes[0], names):
+        predicted = predictions[name] >= 0.5
+        matrix = np.zeros((2, 2), dtype=float)
+        for actual in (0, 1):
+            for estimate in (0, 1):
+                matrix[actual, estimate] = np.sum((labels == actual) & (predicted == estimate))
+        matrix /= matrix.sum(axis=1, keepdims=True)
+        image = axis.imshow(matrix, cmap="Blues", vmin=0, vmax=1)
+        axis.set_title(name)
+        axis.set_xlabel("Predicted")
+        axis.set_ylabel("Actual")
+        axis.set_xticks([0, 1])
+        axis.set_yticks([0, 1])
+        for row in range(2):
+            for col in range(2):
+                axis.text(col, row, f"{matrix[row, col]:.2f}", ha="center", va="center")
+    fig.colorbar(image, ax=axes[0].tolist(), label="Row proportion")
+    fig.suptitle("Normalized OOD test confusion matrices")
+    plt.tight_layout()
+    plt.savefig("./normalized_confusion_matrices.png", dpi=180)
+    print("saved ./normalized_confusion_matrices.png")
+    plt.close()
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for name, probabilities in predictions.items():
+        fpr, tpr, _, _ = binary_curves(labels, probabilities)
+        auc = area_under_curve(fpr, tpr)
+        ax.plot(fpr, tpr, label=f"{name} (AUC={auc:.3f})")
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.5)
+    ax.set_xlabel("False positive rate")
+    ax.set_ylabel("True positive rate")
+    ax.set_title("OOD test ROC curves")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("./roc_curves.png", dpi=180)
+    print("saved ./roc_curves.png")
+    plt.close()
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for name, probabilities in predictions.items():
+        _, _, precision, recall = binary_curves(labels, probabilities)
+        auc = area_under_curve(recall, precision)
+        ax.plot(recall, precision, label=f"{name} (AP={auc:.3f})")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title("OOD test precision-recall curves")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("./precision_recall_curves.png", dpi=180)
+    print("saved ./precision_recall_curves.png")
+    plt.close()
+
 #Ablation section:
 def plot_hparam_search(results_dir="./checkpoints/gpsa_search", metric="test_ood_acc"):
     """Bar charts for the gating_init and new_lr sweeps."""

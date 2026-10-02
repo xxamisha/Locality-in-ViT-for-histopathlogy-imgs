@@ -1,0 +1,4 @@
+model,metric,n_runs,mean,std,min,max,higher_is_better
+vanilla,val_ood_acc,10,0.965,0.0035,0.9588,0.9715,True
+GPSA (default),val_ood_acc,10,0.9301,0.0089,0.9146,0.9418,True
+GPSA (tuned),val_ood_acc,10,0.959,0.0026,0.9546,0.9621,True

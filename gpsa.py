@@ -16,6 +16,7 @@ class GPSA(nn.Module):
         locality_strength=1.0,
         gating_init=1.0,
         class_token=False,
+        use_local_init=True
     ):
         super().__init__()
         #Each attention head gets an equal part of the embedding dimension 

@@ -5,10 +5,9 @@ Reads straight from the seed_results.csv files each run already wrote,
 so nothing here needs to retrain anything - just loading numbers and
 turning them into something presentable (tables that actually get saved
 to disk instead of just printed in a terminal, boxplots, that kind of
-thing). It also records paired tests, ablation summaries, per-class metrics,
-and prediction diagnostics. Prediction diagnostics distinguish individual
-seed checkpoints from probabilities averaged into a seed ensemble. Genuine
-convergence curves are plotted only from per-epoch training histories.
+thing). It also records paired tests and ablation summaries. It does not run
+checkpoint prediction diagnostics; convergence is plotted from the epoch-
+ablation histories when available.
 """
 
 import csv
@@ -16,17 +15,12 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import t
-import torch
 import torch.nn as nn
-from datasets import load_dataset, concatenate_datasets
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
 from transformers import ViTModel
 from phikon_gpsa import inject_gpsa
-from paired_seed_comparison import PhikonClassifier, PhikonGPSAClassifier, compare_results
+from paired_seed_comparison import compare_results
 from gpsa_hparam_search import summarize_search
-from ablation_local_layers import summarize_ablation
-from ablation_epoch import summarize_epoch_ablation
+from ablation_test import summarize_ablation, summarize_epoch_ablation
 
 
 def load_seed_results(base_dir):
@@ -101,18 +95,16 @@ def build_comprehensive_results_csv(
     model_dirs,
     paired_results,
     ablation_results,
-    seed_class_metrics,
-    ensemble_class_metrics,
     save_path="./statistical_results.csv",
 ):
-    """Write raw seed records, summaries, tests, ablations, and class metrics."""
+    """Write raw seed records, summaries, paired tests, and ablations."""
     fields = [
         "record_type", "experiment", "comparison", "model", "baseline_model",
-        "prediction_level", "metric", "seed", "seeds", "n", "n_pairs", "mean",
+        "metric", "seed", "seeds", "n", "n_pairs", "mean",
         "sample_sd", "value", "baseline_mean", "method_mean", "mean_difference",
         "ci95_lower", "ci95_upper", "test_name", "statistic", "p_value",
-        "holm_adjusted_p", "alpha", "significant", "effect_size_name", "effect_size", "class_label",
-        "precision", "recall", "f1", "support", "threshold", "training_seconds",
+        "holm_adjusted_p", "alpha", "significant", "effect_size_name", "effect_size",
+        "training_seconds",
         "validation_seconds", "selected_epoch", "selected_checkpoint", "total_parameters",
         "trainable_parameters", "configuration", "condition", "std_method", "ci_method",
         "higher_is_better", "timing_scope", "notes",
@@ -241,27 +233,6 @@ def build_comprehensive_results_csv(
                 "sample_sd": summary[f"{metric_prefix}_sample_sd"],
                 "std_method": "sample SD (ddof=1)",
                 "higher_is_better": True,
-            })
-
-    for prediction_level, metrics in (
-        ("individual_seed", seed_class_metrics),
-        ("seed_averaged_ensemble", ensemble_class_metrics),
-    ):
-        for metric in metrics:
-            rows.append({
-                "record_type": "per_class_metric",
-                "experiment": "ood_test_diagnostics",
-                "model": metric["model"],
-                "prediction_level": prediction_level,
-                "seed": metric["seed"],
-                "seeds": metric.get("seeds", ""),
-                "n": metric["seed_count"],
-                "class_label": metric["class_label"],
-                "precision": metric["precision"],
-                "recall": metric["recall"],
-                "f1": metric["f1"],
-                "support": metric["support"],
-                "threshold": metric["threshold"],
             })
 
     with open(save_path, "w", newline="") as f:
@@ -398,15 +369,26 @@ def plot_seed_heatmap(model_dirs, metric="test_ood_acc",
     plt.close()
 
 
-def plot_convergence(model_dirs, save_path="./convergence_curves.png"):
-    """Plot per-epoch training loss and validation accuracy across seeds."""
+def plot_epoch_ablation_convergence(
+    results_dir="./checkpoints/ablation_epochs",
+    save_path="./epoch_ablation_convergence.png",
+):
+    """Plot genuine epoch histories for each available epoch-ablation run."""
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
     plotted = False
     palette = plt.get_cmap("tab10")
 
-    for model_index, (name, base_dir) in enumerate(model_dirs.items()):
-        history_path = os.path.join(base_dir, "training_history.csv")
+    condition_dirs = []
+    if os.path.isdir(results_dir):
+        condition_dirs = sorted(
+            (entry for entry in os.listdir(results_dir) if entry.startswith("epochs_")),
+            key=lambda entry: int(entry.split("_", 1)[1]),
+        )
+
+    for condition_index, condition in enumerate(condition_dirs):
+        history_path = os.path.join(results_dir, condition, "training_history.csv")
         if not os.path.exists(history_path):
+            print(f"no training history for {condition}")
             continue
         by_seed = {}
         with open(history_path, "r", newline="") as f:
@@ -417,13 +399,14 @@ def plot_convergence(model_dirs, save_path="./convergence_curves.png"):
                     "val_ood_acc": float(row["val_ood_acc"]),
                 })
         if not by_seed:
+            print(f"no per-epoch rows in {history_path}")
             continue
 
         plotted = True
-        color = palette(model_index % 10)
+        color = palette(condition_index % 10)
         for seed_rows in by_seed.values():
             seed_rows.sort(key=lambda row: row["epoch"])
-            epochs = [row["epoch"] for row in seed_rows]
+            epochs = [row["epoch"] + 1 for row in seed_rows]
             axes[0].plot(epochs, [row["train_loss"] for row in seed_rows],
                          color=color, alpha=0.2, linewidth=0.8)
             axes[1].plot(epochs, [row["val_ood_acc"] for row in seed_rows],
@@ -439,13 +422,16 @@ def plot_convergence(model_dirs, save_path="./convergence_curves.png"):
                 deviations.append(float(np.std(values, ddof=1)) if len(values) > 1 else 0.0)
             means = np.asarray(means)
             deviations = np.asarray(deviations)
-            axis.plot(epochs, means, color=color, linewidth=2, label=name)
-            axis.fill_between(epochs, means - deviations, means + deviations,
+            display_epochs = [epoch + 1 for epoch in epochs]
+            seed_count = len(by_seed)
+            axis.plot(display_epochs, means, color=color, linewidth=2,
+                      label=f"{condition.replace('_', ' ')} ({seed_count} seeds)")
+            axis.fill_between(display_epochs, means - deviations, means + deviations,
                               color=color, alpha=0.15)
 
     if not plotted:
         plt.close(fig)
-        print("no per-epoch histories found; rerun training to generate convergence curves")
+        print("no epoch-ablation histories found; rerun training to generate convergence curves")
         return
 
     axes[0].set(title="Training loss", xlabel="Epoch", ylabel="Mean training loss")
@@ -453,282 +439,11 @@ def plot_convergence(model_dirs, save_path="./convergence_curves.png"):
     for axis in axes:
         axis.grid(alpha=0.3)
         axis.legend()
-    fig.suptitle("Convergence across seeds (lines: individual seeds; bands: mean +/- sample SD)")
+    fig.suptitle("Epoch-count ablation convergence (faint: individual seeds; bands: mean +/- sample SD)")
     fig.tight_layout()
     fig.savefig(save_path, dpi=180)
     print(f"saved {save_path}")
     plt.close(fig)
-
-
-class Camelyon17HFDataset(Dataset):
-    def __init__(self, hf_split, transform):
-        self.data = hf_split
-        self.transform = transform
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, index):
-        example = self.data[index]
-        image = example["image"].convert("RGB")
-        return self.transform(image), example["label"]
-
-
-def build_ood_test_loader(batch_size=16, num_workers=0):
-    """Build the same center-2 OOD test loader used by training."""
-    dataset = load_dataset("wltjr1007/Camelyon17-WILDS")
-    all_data = concatenate_datasets([
-        dataset["train"], dataset["validation"], dataset["test"]
-    ])
-    test_hf = all_data.filter(lambda example: example["center"] == 2)
-    transform = T.Compose([
-        T.Resize((224, 224)),
-        T.ToTensor(),
-        T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-    ])
-    return DataLoader(
-        Camelyon17HFDataset(test_hf, transform),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-    )
-
-
-def collect_predictions(model_dirs, prediction_seeds, device, batch_size=16):
-    """Average positive-class probabilities over a common set of seeds."""
-    factories = {
-        "vanilla": lambda: PhikonClassifier(),
-        "GPSA (default)": lambda: PhikonGPSAClassifier(local_layers=10, locality_strength=1.0,
-                                                         gating_init=1.0),
-        "GPSA (tuned)": lambda: PhikonGPSAClassifier(local_layers=10, locality_strength=1.0,
-                                                       gating_init=0.0),
-    }
-    predictions = {}
-    labels = None
-    checkpoint_paths = {}
-
-    for name, base_dir in model_dirs.items():
-        checkpoint_paths[name] = {}
-        for seed in prediction_seeds:
-            seed_dir = os.path.join(base_dir, f"seed_{seed}")
-            best_path = os.path.join(seed_dir, "best.pt")
-            latest_path = os.path.join(seed_dir, "latest.pt")
-            if os.path.exists(best_path):
-                checkpoint_paths[name][seed] = best_path
-            elif os.path.exists(latest_path):
-                checkpoint_paths[name][seed] = latest_path
-                print(f"warning: {name} seed {seed} has no best.pt; using legacy latest.pt")
-
-    if not checkpoint_paths:
-        print("no checkpoints available for prediction diagnostics")
-        return None, {}, [], {}
-    shared_seeds = sorted(set.intersection(*(set(paths) for paths in checkpoint_paths.values())))
-    if not shared_seeds:
-        print("no shared checkpoint seeds available for prediction diagnostics")
-        return None, {}, [], {}
-    print(f"averaging prediction probabilities over shared seeds: {shared_seeds}")
-    loader = build_ood_test_loader(batch_size=batch_size)
-
-    per_seed_probabilities = {}
-    for name, base_dir in model_dirs.items():
-        probability_sum = None
-        per_seed_probabilities[name] = {}
-        for seed in shared_seeds:
-            checkpoint_path = checkpoint_paths[name][seed]
-            model = factories[name]().to(device)
-            checkpoint = torch.load(checkpoint_path, map_location=device)
-            model.load_state_dict(checkpoint["model_state"])
-            model.eval()
-            batch_probabilities, batch_labels = [], []
-            with torch.no_grad():
-                for images, batch_y in loader:
-                    probabilities = torch.softmax(model(images.to(device)), dim=-1)[:, 1]
-                    batch_probabilities.append(probabilities.cpu().numpy())
-                    batch_labels.append(batch_y.numpy())
-            current_probabilities = np.concatenate(batch_probabilities)
-            current_labels = np.concatenate(batch_labels)
-            if labels is None:
-                labels = current_labels
-            elif not np.array_equal(labels, current_labels):
-                raise ValueError("OOD test labels differ between model evaluations")
-            if probability_sum is None:
-                probability_sum = np.zeros_like(current_probabilities)
-            probability_sum += current_probabilities
-            per_seed_probabilities[name][seed] = current_probabilities
-            del model
-            if device == "cuda":
-                torch.cuda.empty_cache()
-
-        predictions[name] = probability_sum / len(shared_seeds)
-
-    return labels, predictions, shared_seeds, per_seed_probabilities
-
-
-def binary_curves(labels, probabilities):
-    """Return ROC and precision-recall points without requiring scikit-learn."""
-    thresholds = np.r_[np.inf, np.sort(np.unique(probabilities))[::-1]]
-    positives = max(1, np.sum(labels == 1))
-    negatives = max(1, np.sum(labels == 0))
-    fpr, tpr, precision, recall = [], [], [], []
-    for threshold in thresholds:
-        predicted = probabilities >= threshold
-        tp = np.sum(predicted & (labels == 1))
-        fp = np.sum(predicted & (labels == 0))
-        fn = np.sum(~predicted & (labels == 1))
-        fpr.append(fp / negatives)
-        tpr.append(tp / positives)
-        precision.append(tp / max(1, tp + fp))
-        recall.append(tp / max(1, tp + fn))
-    return np.array(fpr), np.array(tpr), np.array(precision), np.array(recall)
-
-
-def area_under_curve(x, y):
-    order = np.argsort(x)
-    return np.trapezoid(y[order], x[order]) if hasattr(np, "trapezoid") else np.trapz(y[order], x[order])
-
-
-def per_class_metrics(labels, predicted, model, prediction_level, seed=None, seed_count=1):
-    """Return binary per-class precision, recall, F1, and support."""
-    rows = []
-    for class_label in (0, 1):
-        actual_positive = labels == class_label
-        predicted_positive = predicted == class_label
-        true_positive = int(np.sum(actual_positive & predicted_positive))
-        false_positive = int(np.sum(~actual_positive & predicted_positive))
-        false_negative = int(np.sum(actual_positive & ~predicted_positive))
-        support = int(np.sum(actual_positive))
-        precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
-        recall = true_positive / support if support else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-        rows.append({
-            "prediction_level": prediction_level,
-            "model": model,
-            "seed": "" if seed is None else seed,
-            "seed_count": seed_count,
-            "class_label": class_label,
-            "threshold": 0.5,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "support": support,
-        })
-    return rows
-
-
-def plot_prediction_diagnostics(model_dirs, device, prediction_seeds=(0,), batch_size=16):
-    """Create normalized confusion matrices, ROC, and precision-recall plots."""
-    labels, predictions, shared_seeds, per_seed_probabilities = collect_predictions(
-        model_dirs, prediction_seeds, device, batch_size
-    )
-    if not predictions:
-        print("no checkpoint predictions available")
-        return [], []
-
-    names = list(predictions)
-    per_seed_metric_rows, ensemble_metric_rows = [], []
-    probability_path = "./seed_averaged_test_probabilities.csv"
-    probability_fields = ["prediction_level", "seeds_averaged", "sample_index", "true_label"] + [
-        f"{name}_positive_probability" for name in names
-    ]
-    with open(probability_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=probability_fields)
-        writer.writeheader()
-        for index, label in enumerate(labels):
-            row = {
-                "prediction_level": "seed_averaged_ensemble",
-                "seeds_averaged": ";".join(map(str, shared_seeds)),
-                "sample_index": index,
-                "true_label": int(label),
-            }
-            row.update({f"{name}_positive_probability": float(predictions[name][index])
-                        for name in names})
-            writer.writerow(row)
-    print(f"saved seed-averaged probabilities for seeds {shared_seeds} to {probability_path}")
-
-    fig, axes = plt.subplots(1, len(names), figsize=(4 * len(names), 3.8), squeeze=False)
-    confusion_rows = []
-    for axis, name in zip(axes[0], names):
-        predicted = predictions[name] >= 0.5
-        ensemble_metric_rows.extend(per_class_metrics(
-            labels, predicted.astype(int), name, "seed_averaged_ensemble",
-            seed_count=len(shared_seeds),
-        ))
-        for metric_row in ensemble_metric_rows[-2:]:
-            metric_row["seeds"] = ";".join(map(str, shared_seeds))
-        for seed, seed_probabilities in per_seed_probabilities[name].items():
-            per_seed_metric_rows.extend(per_class_metrics(
-                labels, (seed_probabilities >= 0.5).astype(int), name,
-                "individual_seed", seed=seed,
-            ))
-        matrix = np.zeros((2, 2), dtype=float)
-        for actual in (0, 1):
-            for estimate in (0, 1):
-                matrix[actual, estimate] = np.sum((labels == actual) & (predicted == estimate))
-        row_totals = matrix.sum(axis=1, keepdims=True)
-        normalized = matrix / np.maximum(row_totals, 1)
-        for actual in (0, 1):
-            for estimate in (0, 1):
-                confusion_rows.append({
-                    "prediction_level": "seed_averaged_ensemble",
-                    "model": name,
-                    "seeds_averaged": ";".join(map(str, shared_seeds)),
-                    "seed_count": len(shared_seeds),
-                    "actual_label": actual,
-                    "predicted_label": estimate,
-                    "count": int(matrix[actual, estimate]),
-                    "row_normalized": normalized[actual, estimate],
-                })
-        image = axis.imshow(normalized, cmap="Blues", vmin=0, vmax=1)
-        axis.set_title(name)
-        axis.set_xlabel("Predicted")
-        axis.set_ylabel("Actual")
-        axis.set_xticks([0, 1])
-        axis.set_yticks([0, 1])
-        for row in range(2):
-            for col in range(2):
-                axis.text(col, row, f"{normalized[row, col]:.2f}", ha="center", va="center")
-    with open("./confusion_matrix_counts.csv", "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=confusion_rows[0].keys())
-        writer.writeheader()
-        writer.writerows(confusion_rows)
-    fig.colorbar(image, ax=axes[0].tolist(), label="Row proportion")
-    fig.suptitle(f"OOD test confusion matrices: seed-averaged ensemble (n={len(shared_seeds)} seeds)")
-    plt.tight_layout()
-    plt.savefig("./normalized_confusion_matrices.png", dpi=180)
-    print("saved ./normalized_confusion_matrices.png")
-    plt.close()
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    for name, probabilities in predictions.items():
-        fpr, tpr, _, _ = binary_curves(labels, probabilities)
-        auc = area_under_curve(fpr, tpr)
-        ax.plot(fpr, tpr, label=f"{name} (AUC={auc:.3f})")
-    ax.plot([0, 1], [0, 1], "k--", alpha=0.5)
-    ax.set_xlabel("False positive rate")
-    ax.set_ylabel("True positive rate")
-    ax.set_title(f"OOD test ROC curves: seed-averaged ensemble (n={len(shared_seeds)} seeds)")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig("./roc_curves.png", dpi=180)
-    print("saved ./roc_curves.png")
-    plt.close()
-
-    fig, ax = plt.subplots(figsize=(6, 5))
-    for name, probabilities in predictions.items():
-        _, _, precision, recall = binary_curves(labels, probabilities)
-        pr_auc = area_under_curve(recall, precision)
-        ax.plot(recall, precision, label=f"{name} (PR-AUC={pr_auc:.3f})")
-    ax.set_xlabel("Recall")
-    ax.set_ylabel("Precision")
-    ax.set_title(f"OOD test precision-recall curves: seed-averaged ensemble (n={len(shared_seeds)} seeds)")
-    ax.legend()
-    ax.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig("./precision_recall_curves.png", dpi=180)
-    print("saved ./precision_recall_curves.png")
-    plt.close()
-    return per_seed_metric_rows, ensemble_metric_rows
 
 
 def count_params(model):
@@ -796,7 +511,7 @@ if __name__ == "__main__":
         save_path="./mean_val_accuracy_confidence_intervals.png",
     )
     plot_seed_heatmap(model_dirs, metric="test_ood_acc")
-    plot_convergence(model_dirs)
+    plot_epoch_ablation_convergence()
 
     # Paired comparisons use the same seed identifiers. The unified report
     # applies Holm correction across these two planned GPSA-vs-vanilla tests.
@@ -826,23 +541,10 @@ if __name__ == "__main__":
     plot_paired_slope("./checkpoints/seed_sweep_vanilla", "./checkpoints/seed_sweep_gpsa",
                        "vanilla", "GPSA (default)")
 
-    # Prediction diagnostics report individual seeds and the separate
-    # probability-averaged ensemble; both require an OOD test-set pass.
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"\ncheckpoint diagnostics using device: {device}")
-    seed_class_metrics, ensemble_class_metrics = plot_prediction_diagnostics(
-        model_dirs,
-        device=device,
-        prediction_seeds=list(range(10)),
-        batch_size=16,
-    )
-
     build_comprehensive_results_csv(
         model_dirs,
         paired_results,
         ablation_results,
-        seed_class_metrics,
-        ensemble_class_metrics,
     )
 
     report_model_sizes()

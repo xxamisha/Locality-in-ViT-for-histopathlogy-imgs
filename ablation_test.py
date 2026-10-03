@@ -1,5 +1,4 @@
-#Ablation study. Combining the orignal seperate files of ablation_local_layers.py and run_experiments.py into one file to run the ablation study for local layers.
-#This file will run the ablation study for local layers, varying the number of GPSA layers while keeping other hyperparameters fixed. It will also run the seed sweep for each value of local_layers and summarize the results.
+# Combined epoch-count and local-layer ablation runner.
 
 #Epoch-count search first: 
 """
@@ -10,7 +9,7 @@ does training longer actually help, or was initialization/LR the real fix?
 supplementary check, not the main statistical claim but enough points
 to plot an accuracy-vs-epochs curve.
 
-Run: python ablation_epoch.py
+Run: python ablation_test.py
 """
 
 import torch
@@ -22,7 +21,6 @@ import os
 import numpy as np
 
 from seed_sweep import run_seed_sweep
-from paired_seed_comparison import PhikonGPSAClassifier
 from phikon_gpsa import inject_gpsa
 from transformers import ViTModel
 import torch.nn as nn
@@ -37,12 +35,6 @@ GATING_INIT = 0.0
 NEW_LR = 1e-3
 EPOCH_VALUES = [1, 3, 5]
 LOCAL_LAYERS_VALUES = [4, 6, 8, 10, 12]
-
-# most optimal config from the gating_init/new_lr hyperparameter search — using
-# these here so this ablation reflects the tuned method, not the
-# untuned defaults
-GATING_INIT = 0.0
-NEW_LR = 1e-3
 
 class PhikonGPSAClassifier(nn.Module):
     def __init__(self, local_layers, locality_strength=1.0, gating_init=1.0, num_classes=2):

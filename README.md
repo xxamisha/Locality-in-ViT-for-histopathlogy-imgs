@@ -23,14 +23,12 @@ Runner Scripts:
 1. run_sweep_local.py - main 10 seed vinalla vs default-config GPSA. Takes around 20.6 hours
 2. gpsa_hparam_search.py - cheap search only 5 seeds over gating init and new lr to get optimal parameters. Around 31 hours
 3. optimal_parameters.py - using those optimal values and running it on gpsa and compares against vinalla - 10.3 hours.
-4. ablation__test.py - Has the main ablation tests. Its further split by these two types of runs:
-   - ablation_epochs- does the epoch count ablation at the tuned config of (1/3/5) epochs and 3 seeds each. Around 24.3 hours. 
-   - ablation_local_layers - ablation at the tuned config (4/6/8/10/12, 3 seeds each). Around 15.5 hours. 
+4. ablation_test.py - Runs both supplementary ablations at the tuned config: epoch counts (1/3/5) and local-layer counts (4/6/8/10/12), with 3 seeds per condition. Results are saved separately under `checkpoints/ablation_epochs` and `checkpoints/ablation_local_layers`.
 
 running order:
 1. py run_sweep_local.py - baseline comparison (vanilla vs untuned GPSA)
 2. py gpsa_hparam_search.py - find best gating_init / new_lr
 3. py run_combined_config.py - headline result at tuned config
-4. py ablation_test.py  - Supplementary
+4. py ablation_test.py - Supplementary epoch-count and local-layer ablations
 7. py analyze_results.py - tables + figures 
 

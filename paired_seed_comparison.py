@@ -12,7 +12,7 @@ from transformers import ViTModel
 import torch.nn as nn
 from phikon_gpsa import inject_gpsa
 from seed_sweep import set_seed, run_seed_sweep, summarize_results
-from scipy.stats import wilcoxon, ttest_rel
+from scipy.stats import wilcoxon, ttest_rel, t as student_t
 import csv
 
 
@@ -149,7 +149,32 @@ def compare_results(
     # effect size - p-value alone doesn't tell you how BIG the difference
     # actually is, just whether it's likely to be real
     diffs = np.array(g) - np.array(v)
-    cohens_d = diffs.mean() / diffs.std(ddof=1)
+    mean_difference = float(diffs.mean())
+    difference_sd = float(diffs.std(ddof=1)) if len(diffs) > 1 else float("nan")
+    cohens_d = mean_difference / difference_sd if difference_sd > 0 else float("nan")
+    alpha = 0.05
+    if len(diffs) > 1:
+        margin = student_t.ppf(1 - alpha / 2, len(diffs) - 1) * difference_sd / np.sqrt(len(diffs))
+        ci95_lower = mean_difference - margin
+        ci95_upper = mean_difference + margin
+    else:
+        ci95_lower = ci95_upper = float("nan")
     print(f"Cohen's d (paired):   {cohens_d:.4f}")
 
-    return {"vanilla": v, "gpsa": g, "wilcoxon_p": p_wilcoxon, "ttest_p": p_ttest, "cohens_d": cohens_d}
+    return {
+        "vanilla": v,
+        "gpsa": g,
+        "wilcoxon_p": p_wilcoxon,
+        "ttest_p": p_ttest,
+        "cohens_d": cohens_d,
+        "n_pairs": len(shared_seeds),
+        "shared_seeds": shared_seeds,
+        "vanilla_mean": float(np.mean(v)),
+        "gpsa_mean": float(np.mean(g)),
+        "mean_difference": mean_difference,
+        "ci95_lower": ci95_lower,
+        "ci95_upper": ci95_upper,
+        "wilcoxon_stat": float(stat),
+        "ttest_stat": float(t_stat),
+        "alpha": alpha,
+    }

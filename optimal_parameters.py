@@ -4,6 +4,9 @@ THIS IS AFTER RUNNING HPARAM.PY THAT I FOUND THIS NEW OPTIMAL RATES. mentioned i
 
 compares against the existing vanilla baseline.
 
+The updated parameters: 
+- gating_init = 0.0 
+- learning rate = 1e-3
 Run: python optimal_parameters.py
 """
 

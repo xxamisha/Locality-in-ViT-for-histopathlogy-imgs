@@ -10,8 +10,7 @@ And these files need to be in the same folder:
     gpsa.py, phikon_gpsa.py, seed_sweep.py, paired_seed_comparison.py
 
 NOTE ON THE if __name__ == "__main__" THING BELOW:
-this actually matters, not just style. On Windows, DataLoader with
-num_workers > 0 spawns extra processes, and each one re-imports this
+On Windows, DataLoader with num_workers > 0 spawns extra processes, and each one re-imports this
 whole file to set itself up. If the dataset-loading code wasn't inside
 this guard, every worker process would end up re-downloading and
 re-filtering the dataset from scratch, all fighting over the same cache
@@ -27,12 +26,12 @@ import torchvision.transforms as T
 
 from paired_seed_comparison import run_paired_comparison, compare_results
 
-# ── settings ────────────────────────────────────────────────────────────
+# settings 
 BATCH_SIZE = 16          # had to drop this from 32 (what Colab used) since the
                          # 3070 only has 8GB VRAM vs the T4's 16GB
 GRAD_ACCUM_STEPS = 2     # makes up for the smaller batch - 16 * 2 = effective
                          # batch of 32 again, see seed_sweep.py for why this
-                         # works out exactly (not just approximately)
+                         # works out exactly
 NUM_SEEDS = 10
 NUM_EPOCHS = 1
 NUM_WORKERS = 4          # drop this to 0 or 2 if DataLoader workers keep crashing
@@ -68,14 +67,14 @@ if __name__ == "__main__":
         print("no GPU found - this is going to be really slow. check torch actually has CUDA:")
         print("  py -c \"import torch; print(torch.cuda.is_available())\"")
 
-    # ── load the dataset ───────────────────────────────────────────────
+    # load the dataset 
     print("loading dataset (should be cached locally after the first run)...")
     hf_dataset = load_dataset("wltjr1007/Camelyon17-WILDS")
     all_data = concatenate_datasets([hf_dataset["train"], hf_dataset["validation"], hf_dataset["test"]])
 
     # splitting by hospital rather than randomly - this matches the actual
     # WILDS benchmark split (train on 3 hospitals, test OOD on 2 held-out
-    # ones), which is the whole point of the project
+    # ones)
     TRAIN_CENTERS = {0, 3, 4}
     VAL_OOD_CENTER = 1
     TEST_OOD_CENTER = 2

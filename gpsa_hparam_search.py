@@ -1,7 +1,11 @@
 """
-Cheap hyperparameter search for GPSA-phikon: gating_init and new_lr,
-ONE AT A TIME (per the lecture's "parameter tuning: one aspect at a
-time" guidance) — two separate single-variable sweeps, not a full grid.
+quick hyperparameter search for GPSA-phikon: gating_init and new_lr, This is becuase the gating-init controls the blend between two types of attention 
+(content and positional). Higher accuracy on a higher gating init means more bias towards locality vs a lower gating init value means that it trusts more the pretrained content
+attention. usually better for gating init to be around 1 since there is only 1 epoch because theres less to undo and it's able to have more room to learn if it wants locality or content. 
+Learning rate is also a newly added parameter to the GPSA model so changing this would aim to change the accuracy of the model. It determines how quickly they learn so lower new_lr 
+value means the new parameters barely move and start at random and the larger lr values are very fast so new components try to catch up quickly. 
+
+Since its only training on one epoch, there is a constrained space so finetuning these values make all the difference. 
 
 Sweep 1: gating_init in {0.0, 0.5, 1.0}, LR left at default (no
           differential LR) — finds the best starting gate value.
@@ -9,14 +13,7 @@ Sweep 2: new_lr in {1e-4, 5e-4, 1e-3}, gating_init held at the paper's
           default (1.0) — finds the best differential LR for GPSA's new
           params (pos_proj, gating_param).
 
-5 seeds per value (30 runs total). This is a SEARCH phase, not your
-final reported result — once you see which values look best, commit to
-a full 10-seed run at that winning combination as your actual headline
-GPSA result (see paired_seed_comparison.py for that final run).
-
-vanilla-phikon is untouched by this script — neither gating_init nor
-new_lr apply to it, so your existing valid vanilla results stay as-is
-as the comparison baseline throughout.
+5 seeds per value (30 runs total). 
 """
 
 import torch

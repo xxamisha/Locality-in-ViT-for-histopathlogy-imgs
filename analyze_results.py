@@ -48,7 +48,7 @@ def build_summary_table(model_dirs, metric="test_ood_acc", higher_is_better=True
         results = load_seed_results(base_dir)
         if not results:
             continue
-        values = np.array([float(r[metric)] for r in results.values()])
+        values = np.array([float(r[metric]) for r in results.values()])
         sample_std = values.std(ddof=1) if len(values) > 1 else float("nan")
         rows.append({
             "model": name,
@@ -145,7 +145,7 @@ def build_comprehensive_results_csv(
                 })
 
         for metric in ("val_ood_acc", "test_ood_acc"):
-            values = np.array([float(result[metric)] for result in results.values()])
+            values = np.array([float(result[metric]) for result in results.values()])
             rows.append({
                 "record_type": "model_summary",
                 "experiment": experiment,
@@ -214,7 +214,7 @@ def build_comprehensive_results_csv(
                 "effect_size_name": "Cohen's dz",
                 "effect_size": comparison["cohens_d"],
                 "higher_is_better": True,
-                "notes": "Holm correction across the two GPSA-vs-vanilla comparisons",
+                "notes": "Holm correction across the three planned paired comparisons",
             })
 
     for summary in ablation_results:
@@ -252,7 +252,7 @@ def plot_boxplot(model_dirs, metric="test_ood_acc", save_path="./boxplot_run_dis
         results = load_seed_results(base_dir)
         if not results:
             continue
-        values = [float(r[metric)] for r in results.values()]
+        values = [float(r[metric]) for r in results.values()]
         data.append(values)
         labels.append(name)
 
@@ -317,7 +317,7 @@ def plot_mean_accuracy_ci(model_dirs, metric="test_ood_acc",
         results = load_seed_results(base_dir)
         if not results:
             continue
-        values = np.array([float(row[metric)] for row in results.values()])
+        values = np.array([float(row[metric]) for row in results.values()])
         if len(values) < 2:
             continue
         labels.append(name)
@@ -350,7 +350,7 @@ def plot_seed_heatmap(model_dirs, metric="test_ood_acc",
         return
 
     matrix = np.array([
-        [float(seed_values[name][seed][metric)] for seed in shared_seeds]
+        [float(seed_values[name][seed][metric]) for seed in shared_seeds]
         for name in model_dirs
     ])
     fig, ax = plt.subplots(figsize=(10, 3.8))
@@ -373,8 +373,11 @@ def plot_epoch_ablation_convergence(
     results_dir="./checkpoints/ablation_epochs",
     save_path="./epoch_ablation_convergence.png",
 ):
-    """Plot the epoch-ablation history for the available seed(s). If only one seed exists, show that single trajectory clearly."""
-    # Use one subplot per condition, with train loss and validation acc stacked vertically.
+    """Plot genuine epoch histories for each available epoch-ablation run."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    plotted = False
+    palette = plt.get_cmap("tab10")
+
     condition_dirs = []
     if os.path.isdir(results_dir):
         condition_dirs = sorted(
@@ -382,85 +385,64 @@ def plot_epoch_ablation_convergence(
             key=lambda entry: int(entry.split("_", 1)[1]),
         )
 
-    if not condition_dirs:
-        print("no epoch-ablation histories found; rerun training to generate convergence curves")
-        return
-
-    n_conditions = len(condition_dirs)
-    fig, axes = plt.subplots(2, n_conditions, figsize=(5 * n_conditions, 8))
-    if n_conditions == 1:
-        axes = np.asarray(axes).reshape(2, 1)
-
-    plotted = False
-    palette = plt.get_cmap("tab10")
-
-    for condition_index, condition in enumerate(condition_dirs):
+    for condition in condition_dirs:
         history_path = os.path.join(results_dir, condition, "training_history.csv")
         if not os.path.exists(history_path):
             print(f"no training history for {condition}")
             continue
-
         by_seed = {}
         with open(history_path, "r", newline="") as f:
             for row in csv.DictReader(f):
-                seed = int(row["seed"])
-                by_seed.setdefault(seed, []).append({
+                by_seed.setdefault(int(row["seed"]), []).append({
                     "epoch": int(row["epoch"]),
                     "train_loss": float(row["train_loss"]),
                     "val_ood_acc": float(row["val_ood_acc"]),
                 })
-
         if not by_seed:
             print(f"no per-epoch rows in {history_path}")
             continue
 
         plotted = True
-        seed_colors = {seed: palette(seed_idx % 10) for seed_idx, seed in enumerate(sorted(by_seed))}
-
-        for seed, seed_rows in sorted(by_seed.items()):
+        epoch_count = int(condition.split("_", 1)[1])
+        condition_color = palette((epoch_count - 1) % 10)
+        for seed_rows in by_seed.values():
             seed_rows.sort(key=lambda row: row["epoch"])
             epochs = [row["epoch"] + 1 for row in seed_rows]
-            color = seed_colors[seed]
+            axes[0].plot(epochs, [row["train_loss"] for row in seed_rows],
+                         color=condition_color, alpha=0.2, linewidth=0.8)
+            axes[1].plot(epochs, [row["val_ood_acc"] for row in seed_rows],
+                         color=condition_color, alpha=0.2, linewidth=0.8)
 
-            axes[0, condition_index].plot(
-                epochs,
-                [row["train_loss"] for row in seed_rows],
-                marker="o",
-                linewidth=2,
-                markersize=4,
-                color=color,
-                label=f"seed {seed}",
-            )
-            axes[1, condition_index].plot(
-                epochs,
-                [row["val_ood_acc"] for row in seed_rows],
-                marker="o",
-                linewidth=2,
-                markersize=4,
-                color=color,
-                label=f"seed {seed}",
-            )
-
-        axes[0, condition_index].set_title(f"{condition.replace('_', ' ')} - Train loss")
-        axes[0, condition_index].set_xlabel("Epoch")
-        axes[0, condition_index].set_ylabel("Training loss")
-        axes[0, condition_index].grid(alpha=0.3)
-        axes[0, condition_index].legend(loc="best", fontsize=8)
-
-        axes[1, condition_index].set_title(f"{condition.replace('_', ' ')} - Validation accuracy")
-        axes[1, condition_index].set_xlabel("Epoch")
-        axes[1, condition_index].set_ylabel("OOD accuracy")
-        axes[1, condition_index].grid(alpha=0.3)
-        axes[1, condition_index].legend(loc="best", fontsize=8)
+        epochs = sorted({row["epoch"] for rows in by_seed.values() for row in rows})
+        for axis, metric in zip(axes, ("train_loss", "val_ood_acc")):
+            means, deviations = [], []
+            for epoch in epochs:
+                values = [row[metric] for rows in by_seed.values() for row in rows
+                          if row["epoch"] == epoch]
+                means.append(float(np.mean(values)))
+                deviations.append(float(np.std(values, ddof=1)) if len(values) > 1 else 0.0)
+            means = np.asarray(means)
+            deviations = np.asarray(deviations)
+            display_epochs = [epoch + 1 for epoch in epochs]
+            seed_count = len(by_seed)
+            axis.plot(display_epochs, means, color=condition_color, linewidth=2,
+                      marker="o", label=f"{epoch_count} epochs ({seed_count} seeds)")
+            axis.fill_between(display_epochs, means - deviations, means + deviations,
+                              color=condition_color, alpha=0.15)
 
     if not plotted:
         plt.close(fig)
         print("no epoch-ablation histories found; rerun training to generate convergence curves")
         return
 
-    fig.suptitle("Epoch-count ablation convergence (single available seed per condition)", fontsize=14)
+    axes[0].set(title="Training loss", xlabel="Epoch", ylabel="Mean training loss")
+    axes[1].set(title="Validation performance", xlabel="Epoch", ylabel="OOD accuracy")
+    for axis in axes:
+        axis.grid(alpha=0.3)
+        axis.legend()
+    fig.suptitle("Epoch-count convergence by training duration (faint: individual seeds; bands: mean +/- sample SD)")
     fig.tight_layout()
-    fig.savefig(save_path, dpi=180, bbox_inches="tight")
+    fig.savefig(save_path, dpi=180)
     print(f"saved {save_path}")
     plt.close(fig)
 
@@ -549,6 +531,34 @@ if __name__ == "__main__":
             "method": gpsa_label,
         })
         paired_results.append(comparison)
+
+    tuned_comparison = compare_results(
+        vanilla_dir="./checkpoints/seed_sweep_gpsa",
+        gpsa_dir="./checkpoints/seed_sweep_gpsa_tuned",
+        baseline_name="GPSA (default)",
+        method_name="GPSA (tuned)",
+    )
+    tuned_comparison.update({
+        "comparison": "GPSA (default) vs GPSA (tuned)",
+        "baseline": "GPSA (default)",
+        "method": "GPSA (tuned)",
+    })
+    paired_results.append(tuned_comparison)
+    print("\nDirect tuned-vs-untuned GPSA comparison (test OOD accuracy)")
+    print(
+        f"{'Comparison':<34} {'n':>3} {'default':>10} {'tuned':>10} "
+        f"{'delta (pp)':>11} {'95% CI (pp)':>22} {'Wilcoxon p':>12}"
+    )
+    print(
+        f"{'GPSA (default) vs GPSA (tuned)':<34} "
+        f"{tuned_comparison['n_pairs']:>3} "
+        f"{tuned_comparison['vanilla_mean'] * 100:>9.2f}% "
+        f"{tuned_comparison['gpsa_mean'] * 100:>9.2f}% "
+        f"{tuned_comparison['mean_difference'] * 100:>+10.2f} "
+        f"[{tuned_comparison['ci95_lower'] * 100:+.2f}, "
+        f"{tuned_comparison['ci95_upper'] * 100:+.2f}] "
+        f"{tuned_comparison['wilcoxon_p']:>12.4g}"
+    )
 
     ablation_results = (
         summarize_search()

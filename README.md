@@ -30,8 +30,9 @@ Runner Scripts:
 running order:
 1. py run_sweep_local.py - baseline comparison (vanilla vs untuned GPSA) 
 2. py gpsa_hparam_search.py - find best gating_init / new_lr [OPTIONAL EXPERIMENT]
-3. py optimal_parameters.py - headline result at tuned config 
-4. py ablation_test.py - Optional epoch-count and local-layer ablations
+3. py optimal_parameters.py - headline result at tuned config
+4. py optimal_parameters.py --extend-seeds - this is to run an additional 5 seeds.
+5. py ablation_test.py - Optional epoch-count and local-layer ablations
 7. py analyze_results.py - tables + figures 
 
 Output:

@@ -107,6 +107,8 @@ def run_paired_comparison(train_loader, val_loader, test_loader, device,
 def compare_results(
     vanilla_dir="./checkpoints/seed_sweep_vanilla",
     gpsa_dir="./checkpoints/seed_sweep_gpsa",
+    baseline_name="vanilla-phikon",
+    method_name="GPSA-phikon",
 ):
     """Runs the actual stats comparison once both sweeps are done."""
     def load_test_accs(base_dir):
@@ -133,8 +135,8 @@ def compare_results(
     g = [gpsa_accs[s] for s in shared_seeds]
 
     import numpy as np
-    print(f"\nvanilla-phikon: mean={np.mean(v):.4f} std={np.std(v):.4f}")
-    print(f"GPSA-phikon:    mean={np.mean(g):.4f} std={np.std(g):.4f}")
+    print(f"\n{baseline_name}: mean={np.mean(v):.4f} std={np.std(v):.4f}")
+    print(f"{method_name}: mean={np.mean(g):.4f} std={np.std(g):.4f}")
 
     # using a paired test here since both models were run on the same
     # seeds - that means each pair of numbers came from a matched

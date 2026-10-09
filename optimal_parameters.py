@@ -10,13 +10,18 @@ The updated parameters:
 Run: python optimal_parameters.py
 """
 
+import argparse
 import torch
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 
 from seed_sweep import run_seed_sweep
-from paired_seed_comparison import PhikonGPSAClassifier, compare_results
+from paired_seed_comparison import (
+    PhikonGPSAClassifier,
+    compare_results,
+    run_paired_comparison,
+)
 
 BATCH_SIZE = 16
 GRAD_ACCUM_STEPS = 2
@@ -53,6 +58,14 @@ def collate_fn(batch):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the tuned GPSA training sweep.")
+    parser.add_argument(
+        "--extend-seeds",
+        action="store_true",
+        help="Train seeds 10-14 for vanilla and tuned GPSA in their existing result folders.",
+    )
+    args = parser.parse_args()
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"using device: {device}")
 
@@ -85,19 +98,37 @@ if __name__ == "__main__":
     test_loader = DataLoader(test_ood_data, batch_size=BATCH_SIZE, shuffle=False,
                               collate_fn=collate_fn, num_workers=NUM_WORKERS)
 
-    print(f"\n=== GPSA-phikon, tuned config (gating_init={GATING_INIT}, new_lr={NEW_LR}), 10 seeds ===")
-    run_seed_sweep(
-        seeds=list(range(NUM_SEEDS)),
-        build_model_fn=lambda: PhikonGPSAClassifier(local_layers=10, locality_strength=1.0,
-                                                      gating_init=GATING_INIT),
-        train_loader=train_loader, val_loader=val_loader, test_loader=test_loader,
-        device=device,
-        ckpt_base_dir="./checkpoints/seed_sweep_gpsa_tuned",
-        num_epochs=NUM_EPOCHS,
-        log_every=50,
-        grad_accum_steps=GRAD_ACCUM_STEPS,
-        new_lr=NEW_LR,
-    )
+    if args.extend_seeds:
+        extra_seeds = list(range(NUM_SEEDS, NUM_SEEDS + 5))
+        print(f"\n=== adding seeds {extra_seeds} to vanilla and tuned GPSA ===")
+        run_paired_comparison(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            test_loader=test_loader,
+            device=device,
+            seeds=extra_seeds,
+            num_epochs=NUM_EPOCHS,
+            log_every=50,
+            grad_accum_steps=GRAD_ACCUM_STEPS,
+            gpsa_new_lr=NEW_LR,
+            gating_init=GATING_INIT,
+            vanilla_ckpt_dir="./checkpoints/seed_sweep_vanilla",
+            gpsa_ckpt_dir="./checkpoints/seed_sweep_gpsa_tuned",
+        )
+    else:
+        print(f"\n=== GPSA-phikon, tuned config (gating_init={GATING_INIT}, new_lr={NEW_LR}), 10 seeds ===")
+        run_seed_sweep(
+            seeds=list(range(NUM_SEEDS)),
+            build_model_fn=lambda: PhikonGPSAClassifier(local_layers=10, locality_strength=1.0,
+                                                          gating_init=GATING_INIT),
+            train_loader=train_loader, val_loader=val_loader, test_loader=test_loader,
+            device=device,
+            ckpt_base_dir="./checkpoints/seed_sweep_gpsa_tuned",
+            num_epochs=NUM_EPOCHS,
+            log_every=50,
+            grad_accum_steps=GRAD_ACCUM_STEPS,
+            new_lr=NEW_LR,
+        )
 
     print("\n=== comparison: vanilla vs tuned GPSA ===")
     compare_results(

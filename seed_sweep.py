@@ -21,6 +21,7 @@ Usage (once train_loader/val_loader/test_loader/device already exist):
 
 import os
 import csv
+import json
 import random
 import numpy as np
 import torch
@@ -70,6 +71,51 @@ def append_result(results_path, row, fieldnames):
         writer.writerow(row)
 
 
+def upsert_result(results_path, row, fieldnames):
+    """Writes the latest result for a seed without leaving duplicate rows."""
+    results = {}
+    if os.path.exists(results_path):
+        with open(results_path, "r", newline="") as f:
+            results = {int(existing["seed"]): existing for existing in csv.DictReader(f)}
+    results[int(row["seed"])] = row
+    temp_path = results_path + ".tmp"
+    with open(temp_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results[seed] for seed in sorted(results))
+    os.replace(temp_path, results_path)
+
+
+def load_epoch_history(history_path, seed):
+    """Returns the recorded epoch rows for one seed, keyed by epoch."""
+    rows = {}
+    if os.path.exists(history_path):
+        with open(history_path, "r", newline="") as f:
+            for row in csv.DictReader(f):
+                if int(row["seed"]) == seed:
+                    rows[int(row["epoch"])] = row
+    return rows
+
+
+def upsert_epoch_history(history_path, row):
+    """Stores one per-epoch observation while preserving other seeds."""
+    rows = {}
+    if os.path.exists(history_path):
+        with open(history_path, "r", newline="") as f:
+            rows = {
+                (int(existing["seed"]), int(existing["epoch"])): existing
+                for existing in csv.DictReader(f)
+            }
+    rows[(int(row["seed"]), int(row["epoch"]))] = row
+    temp_path = history_path + ".tmp"
+    with open(temp_path, "w", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["seed", "epoch", "train_loss", "val_ood_acc"])
+        writer.writeheader()
+        writer.writerows(rows[key] for key in sorted(rows))
+    os.replace(temp_path, history_path)
+
+
 @torch.no_grad()
 def evaluate(model, loader, device):
     model.eval()
@@ -95,6 +141,9 @@ def run_seed_sweep(
     new_lr=None,
     log_every=100,
     grad_accum_steps=1,
+    record_epoch_history=False,
+    retrain_completed_without_history=False,
+    run_config=None,
 ):
     """
     Args:
@@ -117,16 +166,28 @@ def run_seed_sweep(
             actually calling optimizer.step().
     """
     os.makedirs(ckpt_base_dir, exist_ok=True)
+    if run_config is not None:
+        config_path = os.path.join(ckpt_base_dir, "run_config.json")
+        with open(config_path, "w") as f:
+            json.dump(run_config, f, indent=2, sort_keys=True)
     results_path = get_results_log_path(ckpt_base_dir)
     fieldnames = ["seed", "epoch", "final_train_loss", "val_ood_acc", "test_ood_acc"]
+    history_path = os.path.join(ckpt_base_dir, "training_history.csv")
 
     completed = load_completed_seeds(results_path)
     print(f"seeds already completed: {sorted(completed)}")
 
     for seed in seeds:
+        seed_history = load_epoch_history(history_path, seed) if record_epoch_history else {}
+        has_complete_history = all(epoch in seed_history for epoch in range(num_epochs))
         if seed in completed:
-            print(f"seed {seed}: already done, skipping")
-            continue
+            if not record_epoch_history or has_complete_history:
+                print(f"seed {seed}: already done, skipping")
+                continue
+            if not retrain_completed_without_history:
+                print(f"seed {seed}: results exist but epoch history is incomplete; skipping")
+                continue
+            print(f"seed {seed}: retraining from scratch to record missing epoch history")
 
         print(f"\n=== seed {seed} ===")
         set_seed(seed)  # has to happen before the model gets built, otherwise
@@ -154,17 +215,27 @@ def run_seed_sweep(
             optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
 
         start_epoch, start_step = 0, 0
-        if os.path.exists(seed_ckpt_path):
+        force_fresh = seed in completed and record_epoch_history and not has_complete_history
+        epoch_loss_sum = 0.0
+        epoch_sample_count = 0
+        if os.path.exists(seed_ckpt_path) and not force_fresh:
             ckpt = torch.load(seed_ckpt_path, map_location=device)
-            model.load_state_dict(ckpt["model_state"])
-            optimizer.load_state_dict(ckpt["optimizer_state"])
-            start_epoch, start_step = ckpt["epoch"], ckpt["step"] + 1
-            print(f"  resuming seed {seed} from epoch {start_epoch} step {start_step}")
+            if (record_epoch_history and ckpt.get("step", -1) >= 0
+                    and "epoch_loss_sum" not in ckpt):
+                print(f"  seed {seed}: checkpoint predates history tracking; restarting from scratch")
+                start_epoch, start_step = 0, 0
+            else:
+                model.load_state_dict(ckpt["model_state"])
+                optimizer.load_state_dict(ckpt["optimizer_state"])
+                start_epoch, start_step = ckpt["epoch"], ckpt["step"] + 1
+                epoch_loss_sum = ckpt.get("epoch_loss_sum", 0.0)
+                epoch_sample_count = ckpt.get("epoch_sample_count", 0)
+                print(f"  resuming seed {seed} from epoch {start_epoch} step {start_step}")
 
-        model.train()
         final_loss = None
         optimizer.zero_grad()
         for epoch in range(start_epoch, num_epochs):
+            model.train()
             for step, (x, y, metadata) in enumerate(train_loader):
                 if epoch == start_epoch and step < start_step:
                     continue  # skip past whatever was already done before a restart
@@ -177,6 +248,9 @@ def run_seed_sweep(
                 loss = F.cross_entropy(logits, y) / grad_accum_steps
                 loss.backward()
                 final_loss = loss.item() * grad_accum_steps  # undo the scaling just for logging
+                if record_epoch_history:
+                    epoch_loss_sum += final_loss * x.size(0)
+                    epoch_sample_count += x.size(0)
 
                 if (step + 1) % grad_accum_steps == 0:
                     optimizer.step()
@@ -191,21 +265,52 @@ def run_seed_sweep(
                         "optimizer_state": optimizer.state_dict(),
                         "epoch": epoch,
                         "step": step,
+                        "epoch_loss_sum": epoch_loss_sum,
+                        "epoch_sample_count": epoch_sample_count,
                     }, seed_ckpt_path)
 
             start_step = 0
+            if record_epoch_history:
+                train_loss = epoch_loss_sum / epoch_sample_count if epoch_sample_count else float("nan")
+                val_acc = evaluate(model, val_loader, device)
+                history_row = {
+                    "seed": seed,
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_ood_acc": val_acc,
+                }
+                upsert_epoch_history(history_path, history_row)
+                seed_history[epoch] = history_row
+                epoch_loss_sum = 0.0
+                epoch_sample_count = 0
+                torch.save({
+                    "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
+                    "epoch": epoch + 1,
+                    "step": -1,
+                    "epoch_loss_sum": epoch_loss_sum,
+                    "epoch_sample_count": epoch_sample_count,
+                }, seed_ckpt_path)
 
-        val_acc = evaluate(model, val_loader, device)
+        if record_epoch_history and num_epochs - 1 in seed_history:
+            final_loss = float(seed_history[num_epochs - 1]["train_loss"])
+            val_acc = float(seed_history[num_epochs - 1]["val_ood_acc"])
+        else:
+            val_acc = evaluate(model, val_loader, device)
         test_acc = evaluate(model, test_loader, device)
         print(f"  seed {seed}: val_ood_acc={val_acc:.4f} test_ood_acc={test_acc:.4f}")
 
-        append_result(results_path, {
+        result_row = {
             "seed": seed,
             "epoch": num_epochs - 1,
             "final_train_loss": final_loss,
             "val_ood_acc": val_acc,
             "test_ood_acc": test_acc,
-        }, fieldnames)
+        }
+        if record_epoch_history:
+            upsert_result(results_path, result_row, fieldnames)
+        else:
+            append_result(results_path, result_row, fieldnames)
 
     print(f"\nall done. results log: {results_path}")
 

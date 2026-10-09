@@ -214,7 +214,7 @@ def build_comprehensive_results_csv(
                 "effect_size_name": "Cohen's dz",
                 "effect_size": comparison["cohens_d"],
                 "higher_is_better": True,
-                "notes": "Holm correction across the two GPSA-vs-vanilla comparisons",
+                "notes": "Holm correction across the three planned paired comparisons",
             })
 
     for summary in ablation_results:
@@ -385,7 +385,7 @@ def plot_epoch_ablation_convergence(
             key=lambda entry: int(entry.split("_", 1)[1]),
         )
 
-    for condition_index, condition in enumerate(condition_dirs):
+    for condition in condition_dirs:
         history_path = os.path.join(results_dir, condition, "training_history.csv")
         if not os.path.exists(history_path):
             print(f"no training history for {condition}")
@@ -403,14 +403,15 @@ def plot_epoch_ablation_convergence(
             continue
 
         plotted = True
-        color = palette(condition_index % 10)
+        epoch_count = int(condition.split("_", 1)[1])
+        condition_color = palette((epoch_count - 1) % 10)
         for seed_rows in by_seed.values():
             seed_rows.sort(key=lambda row: row["epoch"])
             epochs = [row["epoch"] + 1 for row in seed_rows]
             axes[0].plot(epochs, [row["train_loss"] for row in seed_rows],
-                         color=color, alpha=0.2, linewidth=0.8)
+                         color=condition_color, alpha=0.2, linewidth=0.8)
             axes[1].plot(epochs, [row["val_ood_acc"] for row in seed_rows],
-                         color=color, alpha=0.2, linewidth=0.8)
+                         color=condition_color, alpha=0.2, linewidth=0.8)
 
         epochs = sorted({row["epoch"] for rows in by_seed.values() for row in rows})
         for axis, metric in zip(axes, ("train_loss", "val_ood_acc")):
@@ -424,10 +425,10 @@ def plot_epoch_ablation_convergence(
             deviations = np.asarray(deviations)
             display_epochs = [epoch + 1 for epoch in epochs]
             seed_count = len(by_seed)
-            axis.plot(display_epochs, means, color=color, linewidth=2,
-                      label=f"{condition.replace('_', ' ')} ({seed_count} seeds)")
+            axis.plot(display_epochs, means, color=condition_color, linewidth=2,
+                      marker="o", label=f"{epoch_count} epochs ({seed_count} seeds)")
             axis.fill_between(display_epochs, means - deviations, means + deviations,
-                              color=color, alpha=0.15)
+                              color=condition_color, alpha=0.15)
 
     if not plotted:
         plt.close(fig)
@@ -439,7 +440,7 @@ def plot_epoch_ablation_convergence(
     for axis in axes:
         axis.grid(alpha=0.3)
         axis.legend()
-    fig.suptitle("Epoch-count ablation convergence (faint: individual seeds; bands: mean +/- sample SD)")
+    fig.suptitle("Epoch-count convergence by training duration (faint: individual seeds; bands: mean +/- sample SD)")
     fig.tight_layout()
     fig.savefig(save_path, dpi=180)
     print(f"saved {save_path}")
@@ -530,6 +531,34 @@ if __name__ == "__main__":
             "method": gpsa_label,
         })
         paired_results.append(comparison)
+
+    tuned_comparison = compare_results(
+        vanilla_dir="./checkpoints/seed_sweep_gpsa",
+        gpsa_dir="./checkpoints/seed_sweep_gpsa_tuned",
+        baseline_name="GPSA (default)",
+        method_name="GPSA (tuned)",
+    )
+    tuned_comparison.update({
+        "comparison": "GPSA (default) vs GPSA (tuned)",
+        "baseline": "GPSA (default)",
+        "method": "GPSA (tuned)",
+    })
+    paired_results.append(tuned_comparison)
+    print("\nDirect tuned-vs-untuned GPSA comparison (test OOD accuracy)")
+    print(
+        f"{'Comparison':<34} {'n':>3} {'default':>10} {'tuned':>10} "
+        f"{'delta (pp)':>11} {'95% CI (pp)':>22} {'Wilcoxon p':>12}"
+    )
+    print(
+        f"{'GPSA (default) vs GPSA (tuned)':<34} "
+        f"{tuned_comparison['n_pairs']:>3} "
+        f"{tuned_comparison['vanilla_mean'] * 100:>9.2f}% "
+        f"{tuned_comparison['gpsa_mean'] * 100:>9.2f}% "
+        f"{tuned_comparison['mean_difference'] * 100:>+10.2f} "
+        f"[{tuned_comparison['ci95_lower'] * 100:+.2f}, "
+        f"{tuned_comparison['ci95_upper'] * 100:+.2f}] "
+        f"{tuned_comparison['wilcoxon_p']:>12.4g}"
+    )
 
     ablation_results = (
         summarize_search()

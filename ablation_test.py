@@ -12,6 +12,7 @@ to plot an accuracy-vs-epochs curve.
 Run: python ablation_test.py
 """
 
+import argparse
 import torch
 from datasets import load_dataset, concatenate_datasets
 from torch.utils.data import Dataset, DataLoader
@@ -133,6 +134,14 @@ def summarize_ablation(results_dir="./checkpoints/ablation_local_layers"):
     return summaries
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run epoch-count and local-layer ablations.")
+    parser.add_argument(
+        "--only-epochs",
+        action="store_true",
+        help="Run only the epoch-count ablation and skip local-layer conditions.",
+    )
+    args = parser.parse_args()
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"using device: {device}")
 
@@ -180,6 +189,8 @@ if __name__ == "__main__":
             log_every=100,
             grad_accum_steps=GRAD_ACCUM_STEPS,
             new_lr=NEW_LR,
+            record_epoch_history=True,
+            retrain_completed_without_history=True,
             run_config={
                 "dataset": "Camelyon17-WILDS",
                 "model": "GPSA-phikon",
@@ -196,7 +207,8 @@ if __name__ == "__main__":
                 "normalize_std": [0.5, 0.5, 0.5],
             },
         )
-    for local_layers in LOCAL_LAYERS_VALUES:
+    local_layer_values = [] if args.only_epochs else LOCAL_LAYERS_VALUES
+    for local_layers in local_layer_values:
             print(f"\n{'='*20} local_layers = {local_layers} {'='*20}")
             run_seed_sweep(
                 seeds=seeds,
@@ -226,4 +238,5 @@ if __name__ == "__main__":
     
 
     summarize_epoch_ablation()
-    summarize_ablation()
+    if not args.only_epochs:
+        summarize_ablation()

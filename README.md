@@ -40,34 +40,56 @@ At the end of very seed run, you will result in a averaged accuracy and wilxscon
 The analyze_results.py will output every image that is contained in the Analysis_imgs along with tables. 
 The terminal printed output: 
 
+ saved table to ./results_table_test_ood_acc.csv
+
                model |        metric |   n |    mean |     std |     min |     max
 --------------------------------------------------------------------------------
-             vanilla |  test_ood_acc |  10 |  0.9427 |  0.0221 |  0.9078 |  0.9653
+             vanilla |  test_ood_acc |  15 |  0.9439 |  0.0223 |  0.9063 |  0.9686
       GPSA (default) |  test_ood_acc |  10 |  0.9414 |  0.0162 |  0.9087 |  0.9588
-        GPSA (tuned) |  test_ood_acc |  10 |  0.9511 |  0.0115 |  0.9304 |  0.9687
+        GPSA (tuned) |  test_ood_acc |  15 |  0.9511 |  0.0119 |  0.9299 |  0.9687
 saved table to ./results_table_val_ood_acc.csv
 
                model |        metric |   n |    mean |     std |     min |     max
 --------------------------------------------------------------------------------
-             vanilla |   val_ood_acc |  10 |  0.9650 |  0.0037 |  0.9588 |  0.9715
+             vanilla |   val_ood_acc |  15 |  0.9658 |  0.0033 |  0.9588 |  0.9715
       GPSA (default) |   val_ood_acc |  10 |  0.9301 |  0.0094 |  0.9146 |  0.9418
-        GPSA (tuned) |   val_ood_acc |  10 |  0.9590 |  0.0027 |  0.9546 |  0.9621
-        seeds with results in both: 10
+        GPSA (tuned) |   val_ood_acc |  15 |  0.9568 |  0.0075 |  0.9325 |  0.9621
+saved boxplot to ./boxplot_run_distributions.png
+saved ./mean_test_accuracy_confidence_intervals.png
+saved ./mean_val_accuracy_confidence_intervals.png
+saved ./seed_accuracy_heatmap.png
+no training history for epochs_1
+no training history for epochs_3
+saved ./epoch_ablation_convergence.png
+seeds with results in both: 10
+
 
 vanilla-phikon: mean=0.9427 std=0.0210
-GPSA-phikon:    mean=0.9414 std=0.0154
+GPSA-phikon: mean=0.9414 std=0.0154
 
 Wilcoxon signed-rank: statistic=19.0000, p=4.3164e-01
 Paired t-test:        t=-0.1970, p=8.4818e-01
 Cohen's d (paired):   -0.0623
+seeds with results in both: 15
+
+vanilla-phikon: mean=0.9439 std=0.0216
+GPSA-phikon: mean=0.9511 std=0.0115
+
+Wilcoxon signed-rank: statistic=48.0000, p=5.2448e-01
+Paired t-test:        t=0.9417, p=3.6233e-01
+Cohen's d (paired):   0.2431
 seeds with results in both: 10
 
-vanilla-phikon: mean=0.9427 std=0.0210
-GPSA-phikon:    mean=0.9511 std=0.0109
+GPSA (default): mean=0.9414 std=0.0154
+GPSA (tuned): mean=0.9511 std=0.0109
 
-Wilcoxon signed-rank: statistic=19.0000, p=4.3164e-01
-Paired t-test:        t=0.9513, p=3.6630e-01
-Cohen's d (paired):   0.3008
+Wilcoxon signed-rank: statistic=15.0000, p=2.3242e-01
+Paired t-test:        t=1.3429, p=2.1220e-01
+Cohen's d (paired):   0.4247
+
+Direct tuned-vs-untuned GPSA comparison (test OOD accuracy)
+Comparison                           n    default      tuned  delta (pp)            95% CI (pp)   Wilcoxon p
+GPSA (default) vs GPSA (tuned)      10     94.14%     95.11%      +0.97 [-0.66, +2.60]       0.2324
 
      sweep |    value |   n | val_acc mean | val sample SD | test_acc mean | test sample SD
 --------------------------------------------------------------------------------
@@ -91,6 +113,11 @@ local_layers |   n | val_acc mean | val sample SD | test_acc mean | test sample 
        1 |   3 |       0.9580 |        0.0011 |        0.9573 |         0.0075
        3 |   3 |       0.9567 |        0.0029 |        0.9382 |         0.0224
        5 |   3 |       0.9630 |        0.0018 |        0.9496 |         0.0154
+saved ./paired_slope_vanilla_vs_GPSA_(tuned).png
+saved ./paired_slope_vanilla_vs_GPSA_(default).png
+saved comprehensive statistical results to ./statistical_results.csv
+
+--- parameter counts ---
 vanilla-phikon: 85.80M total params, 85.80M trainable
 GPSA-phikon (tuned config): 85.80M total params, 85.80M trainable
         
